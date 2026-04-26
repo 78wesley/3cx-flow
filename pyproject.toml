@@ -1,9 +1,10 @@
 [project]
 name = "3cx-flow"
 version = "0.1.0"
-description = "Add your description here"
+description = "Display your 3CX Flow"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "threecx-sdk>=0.1.0",
+    "3cx-xapi-python-sdk>=1.0.1",
+    "dotenv>=0.9.9",
 ]

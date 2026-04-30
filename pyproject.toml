@@ -1,10 +1,13 @@
 [project]
 name = "3cx-flow"
-version = "0.1.0"
-description = "Display your 3CX Flow"
+version = "0.2.0"
+description = "Recursive call-flow analyser and documentation generator for 3CX PBX servers"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "3cx-xapi-python-sdk>=1.0.1",
+    "3cx-xapi-python-sdk>=1.1.0",
     "dotenv>=0.9.9",
 ]
+
+[project.scripts]
+3cx-flow = "main:main"

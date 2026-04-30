@@ -9,3 +9,7 @@ wheels/
 # Virtual environments
 .venv
 .env
+.3cx_cache_*.json
+routing_*.md
+
+.claude

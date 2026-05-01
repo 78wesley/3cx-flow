@@ -117,7 +117,7 @@ class ThreeCXAdapter:
         try:
             items = self._client.users.list(
                 ODataQuery()
-                .expand("ForwardingProfiles,ForwardingExceptions")
+                .expand("ForwardingProfiles,ForwardingExceptions,Greetings")
                 .filter("not startsWith(Number,'HD')")
             )
             self._users = {u.number: u for u in items if u.number}

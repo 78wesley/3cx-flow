@@ -669,6 +669,208 @@ def _render_system_extensions_section(adapter: ThreeCXAdapter) -> str:
 
 
 # ---------------------------------------------------------------------------
+# User-specific rich rendering
+# ---------------------------------------------------------------------------
+
+def _schedule_label(schedule: Any) -> str:
+    if schedule is None:
+        return "—"
+    stype = getattr(schedule, "type", None)
+    if stype is None:
+        return "—"
+    return stype.value if hasattr(stype, "value") else str(stype)
+
+
+def _render_forwarding_profile(
+    profile: Any,
+    current_profile_name: str,
+    adapter: ThreeCXAdapter,
+) -> str:
+    pname = getattr(profile, "name", None) or "Profile"
+    pname_str = pname.value if hasattr(pname, "value") else str(pname)
+    marker = " ★" if pname_str == current_profile_name else ""
+
+    meta_parts: list[str] = []
+    timeout = getattr(profile, "no_answer_timeout", None)
+    if timeout:
+        meta_parts.append(f"No Answer: {timeout}s")
+    ring_mobile = getattr(profile, "ring_my_mobile", None)
+    if ring_mobile:
+        meta_parts.append("Ring Mobile: Yes")
+    multi = getattr(profile, "accept_multiple_calls", None)
+    if multi:
+        meta_parts.append("Multiple Calls: Yes")
+    meta = " | ".join(meta_parts) if meta_parts else ""
+
+    header = f"**{pname_str}{marker}**"
+    if meta:
+        header += f" — {meta}"
+
+    rows: list[tuple[str, str]] = []
+    avail = getattr(profile, "available_route", None)
+    if avail:
+        for label, dest in [
+            ("Busy (External)", getattr(avail, "busy_external", None)),
+            ("Busy (Internal)", getattr(avail, "busy_internal", None)),
+            ("No Answer (External)", getattr(avail, "no_answer_external", None)),
+            ("No Answer (Internal)", getattr(avail, "no_answer_internal", None)),
+            ("Not Registered (Ext)", getattr(avail, "not_registered_external", None)),
+            ("Not Registered (Int)", getattr(avail, "not_registered_internal", None)),
+        ]:
+            if _dest_is_set(dest):
+                link = _dest_link(dest, adapter)
+                if link:
+                    rows.append((label, link))
+
+    away = getattr(profile, "away_route", None)
+    if away:
+        all_ext = getattr(away, "all_hours_external", False)
+        all_int = getattr(away, "all_hours_internal", False)
+        for label, dest in [
+            ("Away — All (External)" if all_ext else "Away (External)", getattr(away, "external", None)),
+            ("Away — All (Internal)" if all_int else "Away (Internal)", getattr(away, "internal", None)),
+        ]:
+            if _dest_is_set(dest):
+                link = _dest_link(dest, adapter)
+                if link:
+                    rows.append((label, link))
+
+    parts = [header, ""]
+    if rows:
+        trows = ["| Trigger | Destination |", "|---|---|"]
+        for label, link in rows:
+            trows.append(f"| {label} | {link} |")
+        parts.append("\n".join(trows))
+    else:
+        parts.append("*Phone rings normally — no special routing.*")
+
+    return "\n".join(parts)
+
+
+def _user_exceptions_section(sdk_obj: Any, adapter: ThreeCXAdapter) -> str:
+    exceptions = getattr(sdk_obj, "forwarding_exceptions", None) or []
+    active = [r for r in exceptions if getattr(r, "enabled", False)]
+    if not active:
+        return ""
+
+    rows = ["| Condition | Call Type | Hours | Destination |", "|---|---|---|---|"]
+    for rule in active:
+        cond = getattr(rule, "condition", None)
+        cond_str = cond.value if hasattr(cond, "value") else str(cond or "?")
+        ctype = getattr(rule, "call_type", None)
+        ctype_str = ctype.value if hasattr(ctype, "value") else (str(ctype) if ctype else "All")
+        hours_sched = getattr(rule, "hours", None)
+        hours_str = _schedule_label(hours_sched)
+        dest = getattr(rule, "destination", None)
+        link = _dest_cell(dest, adapter)
+        rows.append(f"| {cond_str} | {ctype_str} | {hours_str} | {link} |")
+
+    return "#### Forwarding Exceptions\n\n" + "\n".join(rows)
+
+
+def _user_greetings_section(sdk_obj: Any) -> str:
+    greetings = getattr(sdk_obj, "greetings", None) or []
+    if not greetings:
+        return ""
+
+    rows = ["| Type | Name | File |", "|---|---|---|"]
+    for g in greetings:
+        gtype = getattr(g, "type", None)
+        gtype_str = gtype.value if hasattr(gtype, "value") else str(gtype or "—")
+        gname = getattr(g, "name", None) or "—"
+        gfile = getattr(g, "file_name", None) or getattr(g, "filename", None) or "—"
+        rows.append(f"| {gtype_str} | {gname} | `{gfile}` |")
+
+    return "#### Greetings\n\n" + "\n".join(rows)
+
+
+def _render_user_entity(sdk_obj: Any, adapter: ThreeCXAdapter, include_raw: bool) -> str:
+    number = getattr(sdk_obj, "number", "") or ""
+    name = _sdk_name(sdk_obj)
+    anc = _anchor(DnType.USER, number)
+
+    parts: list[str] = [
+        f'<a id="{anc}"></a>',
+        "",
+        f"### 👤 {name} ({number})",
+        "",
+    ]
+
+    # ── Properties ────────────────────────────────────────────────────
+    props: dict[str, Any] = {}
+    for key, attr in [
+        ("Email", "email_address"),
+        ("Mobile", "mobile"),
+        ("Outbound Caller ID", "outbound_caller_id"),
+        ("Current Profile", "current_profile_name"),
+        ("Prompt Set", "prompt_set"),
+    ]:
+        v = getattr(sdk_obj, attr, None)
+        if v:
+            props[key] = v
+    if getattr(sdk_obj, "is_registered", None) is False:
+        props["Registered"] = "No"
+    vm = getattr(sdk_obj, "vm_enabled", None)
+    if vm is not None:
+        props["Voicemail"] = vm
+    vm_email = getattr(sdk_obj, "vm_email_options", None)
+    if vm_email is not None:
+        props["VM Email"] = vm_email
+    hours_sched = getattr(sdk_obj, "hours", None)
+    if hours_sched is not None:
+        label = _schedule_label(hours_sched)
+        if label != "—":
+            props["Office Hours"] = label
+    break_sched = getattr(sdk_obj, "break_time", None)
+    if break_sched is not None:
+        label = _schedule_label(break_sched)
+        if label != "—":
+            props["Break Time"] = label
+
+    if props:
+        parts.append(_props_table(props))
+        parts.append("")
+
+    # ── Greetings ─────────────────────────────────────────────────────
+    greetings_section = _user_greetings_section(sdk_obj)
+    if greetings_section:
+        parts.append(greetings_section)
+        parts.append("")
+
+    # ── Forwarding profiles ───────────────────────────────────────────
+    profiles = getattr(sdk_obj, "forwarding_profiles", None) or []
+    current = getattr(sdk_obj, "current_profile_name", None) or ""
+    if profiles:
+        parts.append("#### Forwarding Profiles")
+        parts.append("")
+        for profile in profiles:
+            parts.append(_render_forwarding_profile(profile, current, adapter))
+            parts.append("")
+
+    # ── Forwarding exceptions ─────────────────────────────────────────
+    exc_section = _user_exceptions_section(sdk_obj, adapter)
+    if exc_section:
+        parts.append(exc_section)
+        parts.append("")
+
+    if include_raw:
+        try:
+            if hasattr(sdk_obj, "model_dump"):
+                data = sdk_obj.model_dump(by_alias=True, exclude_none=True)
+            else:
+                data = vars(sdk_obj)
+            raw_json = json.dumps(data, indent=2, default=str)
+        except Exception as exc:
+            raw_json = f"(could not serialize: {exc})"
+        parts += [
+            "<details>", "<summary>Raw API data</summary>",
+            "", f"```json\n{raw_json}\n```", "", "</details>", "",
+        ]
+
+    return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
 # Generic per-entity rendering (IVR, queue, ring group, CFA, group, user)
 # ---------------------------------------------------------------------------
 
@@ -678,15 +880,15 @@ def _render_entity(
     adapter: ThreeCXAdapter,
     include_raw: bool,
 ) -> str:
+    if dn_type == DnType.USER:
+        return _render_user_entity(sdk_obj, adapter, include_raw)
+
     number = getattr(sdk_obj, "number", "") or ""
     name = _sdk_name(sdk_obj)
     icon = _ICONS.get(dn_type, "•")
     anc = _anchor(dn_type, number)
 
-    if dn_type == DnType.USER:
-        props = _user_props(sdk_obj)
-        routes = _user_routes(sdk_obj, adapter)
-    elif dn_type == DnType.QUEUE:
+    if dn_type == DnType.QUEUE:
         props = _queue_props(sdk_obj)
         routes = _queue_routes(sdk_obj, adapter)
     elif dn_type == DnType.RING_GROUP:

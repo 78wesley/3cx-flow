@@ -38,6 +38,10 @@ class ThreeCXAdapter:
         self._trunks: dict[str, Any] = {}
         self._fxs_devices: dict[str, Any] = {}        # keyed by mac_address
         self._system_extensions: dict[str, Any] = {}  # keyed by number
+        self._prompt_sets: dict[str, Any] = {}        # keyed by folder GUID
+        self._dn_groups: dict[str, list[Any]] = {}    # number -> [Group, …] (reverse membership index)
+        self._groups_by_id: dict[int, Any] = {}       # group Id -> Group
+        self._prompt_set_names: dict[str, str] = {}   # folder GUID (lowercased) -> display name
         self._loaded = False
 
     # ------------------------------------------------------------------
@@ -69,6 +73,9 @@ class ThreeCXAdapter:
                 self._trunks = cached.get("trunks", {})
                 self._fxs_devices = cached.get("fxs_devices", {})
                 self._system_extensions = cached.get("system_extensions", {})
+                self._prompt_sets = cached.get("prompt_sets", {})
+                self._build_group_index()
+                self._build_prompt_set_index()
                 self._loaded = True
                 total = self._total_count()
                 print(f"  Loaded {total} objects from cache: {cache.path}")
@@ -84,6 +91,9 @@ class ThreeCXAdapter:
         self._load_trunks()
         self._load_fxs_devices()
         self._load_system_extensions()
+        self._load_prompt_sets()
+        self._build_group_index()
+        self._build_prompt_set_index()
         self._loaded = True
 
         # ── Persist to cache ──────────────────────────────────────────
@@ -98,6 +108,7 @@ class ThreeCXAdapter:
                 "trunks": self._trunks,
                 "fxs_devices": self._fxs_devices,
                 "system_extensions": self._system_extensions,
+                "prompt_sets": self._prompt_sets,
             })
             print(f"  Saved {self._total_count()} objects to cache: {cache.path}")
 
@@ -106,6 +117,7 @@ class ThreeCXAdapter:
             self._users, self._queues, self._ring_groups,
             self._receptionists, self._groups, self._call_flow_apps,
             self._trunks, self._fxs_devices, self._system_extensions,
+            self._prompt_sets,
         ])
 
     # ------------------------------------------------------------------
@@ -117,7 +129,7 @@ class ThreeCXAdapter:
         try:
             items = self._client.users.list(
                 ODataQuery()
-                .expand("ForwardingProfiles,ForwardingExceptions,Greetings")
+                .expand("ForwardingProfiles,ForwardingExceptions,Greetings,Groups($expand=Rights,GroupRights)")
                 .filter("not startsWith(Number,'HD')")
             )
             self._users = {u.number: u for u in items if u.number}
@@ -162,7 +174,9 @@ class ThreeCXAdapter:
         print("  Loading groups…")
         try:
             items = self._client.groups.list(
-                ODataQuery().filter("not startsWith(Name, '___FAVORITES___')")
+                ODataQuery()
+                .expand("Members,OfficeHolidays")
+                .filter("not startsWith(Name, '___FAVORITES___')")
             )
             self._groups = {g.number: g for g in items if g.number}
             logger.info("Loaded %d groups.", len(self._groups))
@@ -214,6 +228,65 @@ class ThreeCXAdapter:
             logger.info("Loaded %d system extensions.", len(self._system_extensions))
         except ThreeCXError as exc:
             logger.warning("Could not load system extensions: %s", exc)
+
+    def _load_prompt_sets(self) -> None:
+        print("  Loading prompt sets…")
+        try:
+            items = self._client.prompts.list_prompt_sets()
+            self._prompt_sets = {
+                ps.folder: ps for ps in (items or []) if getattr(ps, "folder", None)
+            }
+            logger.info("Loaded %d prompt sets.", len(self._prompt_sets))
+        except ThreeCXError as exc:
+            logger.warning("Could not load prompt sets: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Group (department) membership index
+    # ------------------------------------------------------------------
+
+    def _build_group_index(self) -> None:
+        """
+        Build a reverse index mapping each member DN number to the list of
+        groups (departments) it belongs to, from each group's expanded
+        ``Members`` collection. A DN may belong to several groups.
+        """
+        index: dict[str, list[Any]] = {}
+        by_id: dict[int, Any] = {}
+        for group in self._groups.values():
+            gid = getattr(group, "id", None)
+            if gid is not None:
+                by_id[gid] = group
+            for member in getattr(group, "members", None) or []:
+                num = getattr(member, "number", None)
+                if num:
+                    index.setdefault(num, []).append(group)
+        self._dn_groups = index
+        self._groups_by_id = by_id
+
+    def _build_prompt_set_index(self) -> None:
+        """Map prompt-set folder GUIDs (lowercased) to their display names."""
+        names: dict[str, str] = {}
+        for folder, ps in self._prompt_sets.items():
+            name = getattr(ps, "prompt_set_name", None)
+            if folder and name:
+                names[folder.lower()] = name
+        self._prompt_set_names = names
+
+    def groups_for(self, number: str) -> list[Any]:
+        """Return the list of groups (departments) the given DN belongs to."""
+        return self._dn_groups.get(number, [])
+
+    def group_by_id(self, group_id: Optional[int]) -> Optional[Any]:
+        """Return the group with the given Id, or None."""
+        if group_id is None:
+            return None
+        return self._groups_by_id.get(group_id)
+
+    def prompt_set_name(self, folder: Optional[str]) -> Optional[str]:
+        """Resolve a prompt-set folder GUID to its display name, or None."""
+        if not folder:
+            return None
+        return self._prompt_set_names.get(folder.lower())
 
     # ------------------------------------------------------------------
     # Lookups

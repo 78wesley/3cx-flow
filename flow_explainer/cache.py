@@ -22,6 +22,7 @@ from threecx.models._generated import (
     CallFlowApp,
     Fxs,
     Group,
+    PromptSet,
     Queue,
     Receptionist,
     RingGroup,
@@ -47,6 +48,7 @@ _CATEGORY_MODELS: dict[str, type] = {
     "trunks": Trunk,
     "fxs_devices": Fxs,
     "system_extensions": SystemExtensionStatus,
+    "prompt_sets": PromptSet,
 }
 
 

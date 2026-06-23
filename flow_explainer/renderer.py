@@ -156,6 +156,93 @@ def _dest_link(dest: Optional[Destination], adapter: ThreeCXAdapter) -> Optional
     return f"❓ `{dest.name or number}` ({number}) — *not found*"
 
 
+def _department_value(number: str, adapter: ThreeCXAdapter) -> Optional[str]:
+    """
+    Render the department(s) a DN (queue, ring group, IVR, CFA) belongs to as
+    a comma-separated list of links to each group's section.
+    """
+    groups = adapter.groups_for(number)
+    if not groups:
+        return None
+    ordered = sorted(groups, key=lambda g: (getattr(g, "name", None) or getattr(g, "number", "") or "").lower())
+    return ", ".join(_group_link(g) for g in ordered)
+
+
+def _group_link(group: Any) -> str:
+    gname = getattr(group, "name", None) or getattr(group, "number", None) or "?"
+    gnum = getattr(group, "number", None) or ""
+    return f"[🏢 {gname}](#{_anchor(DnType.GROUP, gnum)})" if gnum else f"🏢 {gname}"
+
+
+# 3CX group role names -> human-readable labels.
+_ROLE_LABELS: dict[str, str] = {
+    "system": "System",
+    "observers": "Observer",
+    "receptionists": "Receptionist",
+    "supervisors": "Supervisor",
+    "group_admins": "Department Administrator",
+    "managers": "Manager",
+    "group_owners": "Owner",
+    "system_admins": "System Administrator",
+    "system_owners": "System Owner",
+}
+
+
+def _role_label(role_name: Optional[str]) -> Optional[str]:
+    if not role_name:
+        return None
+    return _ROLE_LABELS.get(role_name, role_name.replace("_", " ").title())
+
+
+def _membership_role(user_group: Any) -> Optional[str]:
+    rights = getattr(user_group, "group_rights", None) or getattr(user_group, "rights", None)
+    return getattr(rights, "role_name", None) if rights else None
+
+
+def _user_department_value(sdk_obj: Any, adapter: ThreeCXAdapter) -> Optional[str]:
+    """
+    Render a user's department(s) from its own expanded ``Groups`` collection.
+
+    Only genuine memberships are shown — "observers" entries are monitoring
+    rights, not real department membership, so they are dropped. The primary
+    (main) department is highlighted (bold + ★) and listed first; each entry
+    notes the user's role in that department.
+    """
+    primary_id = getattr(sdk_obj, "primary_group_id", None)
+    memberships = getattr(sdk_obj, "groups", None) or []
+
+    # (group_id, role_name) for each genuine (non-observer) membership.
+    genuine = [
+        (getattr(ug, "group_id", None), _membership_role(ug))
+        for ug in memberships
+        if _membership_role(ug) != "observers"
+    ]
+
+    # Fall back to the primary group alone if no genuine membership is present.
+    if not genuine:
+        group = adapter.group_by_id(primary_id)
+        return f"**{_group_link(group)} ★**" if group is not None else None
+
+    def _sort_key(item: tuple[Optional[int], Optional[str]]) -> tuple[int, str]:
+        gid, _ = item
+        group = adapter.group_by_id(gid)
+        name = (getattr(group, "name", None) or "") if group else ""
+        return (0 if gid == primary_id else 1, name.lower())
+
+    parts: list[str] = []
+    for gid, role in sorted(genuine, key=_sort_key):
+        group = adapter.group_by_id(gid)
+        if group is None:
+            continue
+        rl = _role_label(role)
+        text = _group_link(group) + (f" ({rl})" if rl else "")
+        if gid == primary_id:
+            text = f"**{text} ★**"
+        parts.append(text)
+
+    return ", ".join(parts) if parts else None
+
+
 def _dest_cell(dest: Optional[Destination], adapter: ThreeCXAdapter) -> str:
     """Like _dest_link but returns '—' instead of None (for table cells)."""
     link = _dest_link(dest, adapter)
@@ -351,6 +438,97 @@ def _group_routes(sdk_obj: Any, adapter: ThreeCXAdapter) -> list[tuple[str, str]
             if link:
                 rows.append((label, link))
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Group office-hours schedule and holidays
+# ---------------------------------------------------------------------------
+
+_WEEKDAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+_MONTHS = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def _fmt_time(t: Any) -> str:
+    if t is None:
+        return "?"
+    return t.strftime("%H:%M") if hasattr(t, "strftime") else str(t)
+
+
+def _period_range(start: Any, stop: Any) -> str:
+    return f"{_fmt_time(start)}–{_fmt_time(stop)}"
+
+
+def _schedule_section(schedule: Any, heading: str) -> str:
+    """Render a Schedule (office hours / break time) as a per-day table."""
+    periods = getattr(schedule, "periods", None) or [] if schedule else []
+    if not periods:
+        return ""
+
+    # Group time ranges by weekday.
+    by_day: dict[str, list[str]] = {}
+    for p in periods:
+        dow = getattr(p, "day_of_week", None)
+        day = dow.value if hasattr(dow, "value") else str(dow or "?")
+        by_day.setdefault(day, []).append(_period_range(getattr(p, "start", None), getattr(p, "stop", None)))
+
+    stype = getattr(schedule, "type", None)
+    stype_str = stype.value if hasattr(stype, "value") else (str(stype) if stype else "")
+    header = heading + (f" ({stype_str})" if stype_str else "")
+
+    rows = ["| Day | Hours |", "|---|---|"]
+    for day in _WEEKDAY_ORDER:
+        rows.append(f"| {day} | {', '.join(by_day[day]) if day in by_day else 'Closed'} |")
+    # Any non-standard day labels not in the canonical week order.
+    for day in by_day:
+        if day not in _WEEKDAY_ORDER:
+            rows.append(f"| {day} | {', '.join(by_day[day])} |")
+
+    return header + "\n\n" + "\n".join(rows)
+
+
+def _group_hours_section(sdk_obj: Any) -> str:
+    return _schedule_section(getattr(sdk_obj, "hours", None), "#### Office Hours")
+
+
+def _group_break_section(sdk_obj: Any) -> str:
+    return _schedule_section(getattr(sdk_obj, "break_time", None), "#### Break Hours")
+
+
+def _holiday_dates(hd: Any) -> str:
+    d, m = getattr(hd, "day", None), getattr(hd, "month", None)
+    de, me = getattr(hd, "day_end", None), getattr(hd, "month_end", None)
+
+    def _one(day: Any, month: Any) -> str:
+        if not month:
+            return "?"
+        mon = _MONTHS[month] if 1 <= month < len(_MONTHS) else str(month)
+        return f"{day:02d} {mon}" if day else mon
+
+    start = _one(d, m)
+    end = _one(de, me)
+    label = start if end in (start, "?") else f"{start} – {end}"
+
+    if not getattr(hd, "is_recurrent", False):
+        year = getattr(hd, "year", None)
+        if year and year > 1:
+            label += f" {year}"
+    return label
+
+
+def _group_holidays_section(sdk_obj: Any) -> str:
+    """Render the department's configured holidays, if any."""
+    holidays = getattr(sdk_obj, "office_holidays", None) or []
+    if not holidays:
+        return ""
+
+    rows = ["| Holiday | Dates | Recurring |", "|---|---|---|"]
+    for hd in holidays:
+        name = getattr(hd, "name", None) or "—"
+        dates = _holiday_dates(hd)
+        recurring = "Yes" if getattr(hd, "is_recurrent", False) else "No"
+        rows.append(f"| {name} | {dates} | {recurring} |")
+
+    return "#### Holidays\n\n" + "\n".join(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -798,16 +976,21 @@ def _render_user_entity(sdk_obj: Any, adapter: ThreeCXAdapter, include_raw: bool
 
     # ── Properties ────────────────────────────────────────────────────
     props: dict[str, Any] = {}
+    dept = _user_department_value(sdk_obj, adapter)
+    if dept:
+        props["Department"] = dept
     for key, attr in [
         ("Email", "email_address"),
         ("Mobile", "mobile"),
         ("Outbound Caller ID", "outbound_caller_id"),
         ("Current Profile", "current_profile_name"),
-        ("Prompt Set", "prompt_set"),
     ]:
         v = getattr(sdk_obj, attr, None)
         if v:
             props[key] = v
+    prompt_set = getattr(sdk_obj, "prompt_set", None)
+    if prompt_set:
+        props["Prompt Set"] = adapter.prompt_set_name(prompt_set) or prompt_set
     if getattr(sdk_obj, "is_registered", None) is False:
         props["Registered"] = "No"
     vm = getattr(sdk_obj, "vm_enabled", None)
@@ -907,6 +1090,12 @@ def _render_entity(
         props = {}
         routes = []
 
+    # Prepend the department(s) this DN belongs to (queue, ring group, IVR, CFA).
+    if dn_type != DnType.GROUP:
+        dept = _department_value(number, adapter)
+        if dept:
+            props = {"Department": dept, **props}
+
     parts: list[str] = [
         f'<a id="{anc}"></a>',
         "",
@@ -922,6 +1111,17 @@ def _render_entity(
         parts.append("**Routing:**")
         parts.append("")
         parts.append(_routes_table(routes))
+
+    # Departments also list their office-hours schedule, break hours and holidays.
+    if dn_type == DnType.GROUP:
+        for section in (
+            _group_hours_section(sdk_obj),
+            _group_break_section(sdk_obj),
+            _group_holidays_section(sdk_obj),
+        ):
+            if section:
+                parts.append("")
+                parts.append(section)
 
     if include_raw:
         try:

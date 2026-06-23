@@ -177,6 +177,7 @@ def _group_link(group: Any) -> str:
 # 3CX group role names -> human-readable labels.
 _ROLE_LABELS: dict[str, str] = {
     "system": "System",
+    "users": "User",
     "observers": "Observer",
     "receptionists": "Receptionist",
     "supervisors": "Supervisor",
@@ -979,26 +980,86 @@ def _render_user_entity(sdk_obj: Any, adapter: ThreeCXAdapter, include_raw: bool
     dept = _user_department_value(sdk_obj, adapter)
     if dept:
         props["Department"] = dept
+
+    # Account status — only flag the non-default (disabled) case.
+    if getattr(sdk_obj, "enabled", None) is False:
+        props["Status"] = "Disabled"
+
     for key, attr in [
         ("Email", "email_address"),
         ("Mobile", "mobile"),
         ("Outbound Caller ID", "outbound_caller_id"),
-        ("Current Profile", "current_profile_name"),
     ]:
         v = getattr(sdk_obj, attr, None)
         if v:
             props[key] = v
+
+    lang = getattr(sdk_obj, "language", None)
+    if lang:
+        props["Language"] = str(lang).upper()
+
+    current_profile = getattr(sdk_obj, "current_profile_name", None)
+    if current_profile:
+        props["Current Profile"] = current_profile
+
+    qs = getattr(sdk_obj, "queue_status", None)
+    if qs is not None:
+        qs_val = qs.value if hasattr(qs, "value") else str(qs)
+        props["Queue Status"] = {"LoggedIn": "Logged in", "LoggedOut": "Logged out"}.get(qs_val, qs_val)
+
     prompt_set = getattr(sdk_obj, "prompt_set", None)
     if prompt_set:
         props["Prompt Set"] = adapter.prompt_set_name(prompt_set) or prompt_set
+
     if getattr(sdk_obj, "is_registered", None) is False:
         props["Registered"] = "No"
+
     vm = getattr(sdk_obj, "vm_enabled", None)
     if vm is not None:
         props["Voicemail"] = vm
     vm_email = getattr(sdk_obj, "vm_email_options", None)
     if vm_email is not None:
         props["VM Email"] = vm_email
+
+    # Call recording.
+    if getattr(sdk_obj, "record_calls", None):
+        props["Call Recording"] = (
+            "External calls only" if getattr(sdk_obj, "record_external_calls_only", None) else "Yes"
+        )
+
+    # Notable on/off features — shown only when enabled.
+    for key, attr in [
+        ("Call Screening", "call_screening"),
+        ("Hidden in Phonebook", "hide_in_phonebook"),
+        ("Hotdesking", "enable_hotdesking"),
+        ("AI Agent", "ai_agent"),
+        ("Email on Missed Calls", "send_email_missed_calls"),
+    ]:
+        if getattr(sdk_obj, attr, None) is True:
+            props[key] = "Yes"
+
+    # Two-factor authentication.
+    if getattr(sdk_obj, "require2_fa", None) is True:
+        props["2FA"] = "Required"
+    elif getattr(sdk_obj, "enable2_fa", None) is True:
+        props["2FA"] = "Enabled"
+
+    # Tags.
+    tags = getattr(sdk_obj, "tags", None) or []
+    if tags:
+        tag_names = [t.value if hasattr(t, "value") else str(t) for t in tags]
+        props["Tags"] = ", ".join(n for n in tag_names if n)
+
+    # Provisioned phones / devices.
+    phones = getattr(sdk_obj, "phones", None) or []
+    if phones:
+        labels = []
+        for p in phones:
+            label = getattr(p, "template_name", None) or getattr(p, "name", None) or getattr(p, "mac_address", None)
+            if label:
+                labels.append(str(label))
+        props["Phones"] = ", ".join(labels) if labels else str(len(phones))
+
     hours_sched = getattr(sdk_obj, "hours", None)
     if hours_sched is not None:
         label = _schedule_label(hours_sched)

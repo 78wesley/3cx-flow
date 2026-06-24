@@ -9,7 +9,9 @@ wheels/
 # Virtual environments
 .venv
 .env
-.3cx_cache_*.json
-routing_*.md
+
+# Cached API data and generated reports
+cache/*.json
+export/*.md
 
 .claude

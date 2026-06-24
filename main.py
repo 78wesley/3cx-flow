@@ -112,16 +112,20 @@ def select_server_by_name(servers: list[ServerConfig], name: str) -> ServerConfi
     return next((s for s in servers if s.name.lower() == name.lower()), None)
 
 
-def default_output_filename(server: ServerConfig) -> str:
+EXPORT_DIR = Path("export")
+CACHE_DIR = Path("cache")
+
+
+def default_output_filename(server: ServerConfig) -> Path:
     from datetime import datetime
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe = re.sub(r"[^\w]", "_", server.name)
-    return f"routing_{safe}_{ts}.md"
+    return EXPORT_DIR / f"routing_{safe}_{ts}.md"
 
 
 def default_cache_filename(server: ServerConfig) -> Path:
     safe = re.sub(r"[^\w]", "_", server.name)
-    return Path(f".3cx_cache_{safe}.json")
+    return CACHE_DIR / f"3cx_cache_{safe}.json"
 
 
 def main() -> int:
@@ -178,6 +182,7 @@ def main() -> int:
     cache: CacheManager | None = None
     if not args.no_cache:
         cache_path = Path(args.cache_file) if args.cache_file else default_cache_filename(server)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache = CacheManager(path=cache_path, ttl=args.cache_ttl)
         if args.refresh and cache_path.exists():
             cache_path.unlink()
@@ -233,7 +238,8 @@ def main() -> int:
     )
 
     # ── Write output ──────────────────────────────────────────────────
-    output_path = Path(args.output) if args.output else Path(default_output_filename(server))
+    output_path = Path(args.output) if args.output else default_output_filename(server)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(report, encoding="utf-8")
     print(f"Report written to: {output_path.resolve()}")
     return 0

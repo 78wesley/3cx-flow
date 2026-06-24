@@ -57,7 +57,7 @@ API credentials are created in the 3CX admin console under
 ## Usage
 
 ```bash
-# Interactive server selection, output to routing_<server>_<timestamp>.md
+# Interactive server selection, output to export/routing_<server>_<timestamp>.md
 uv run python main.py
 
 # Pick a server non-interactively and choose the output file
@@ -75,9 +75,9 @@ uv run python main.py --server pbx1 --include-raw
 | Flag | Description |
 |---|---|
 | `--server NAME` | Server name from `.env`; skips interactive selection. |
-| `--output, -o FILE` | Output path (default: `routing_<server>_<timestamp>.md`). |
+| `--output, -o FILE` | Output path (default: `export/routing_<server>_<timestamp>.md`). |
 | `--include-raw` | Append raw API JSON for every entry. |
-| `--cache-file PATH` | Cache file path (default: `.3cx_cache_<server>.json`). |
+| `--cache-file PATH` | Cache file path (default: `cache/3cx_cache_<server>.json`). |
 | `--cache-ttl SECONDS` | Seconds before the cache is stale (default: 3600). |
 | `--refresh` | Force a fresh API fetch and overwrite the cache. |
 | `--no-cache` | Disable caching entirely. |

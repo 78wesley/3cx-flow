@@ -174,6 +174,19 @@ def _group_link(group: Any) -> str:
     return f"[🏢 {gname}](#{_anchor(DnType.GROUP, gnum)})" if gnum else f"🏢 {gname}"
 
 
+def _peer_link(number: str, name: Optional[str], adapter: ThreeCXAdapter) -> str:
+    """
+    Render a member/agent (name + number) as a clickable link to its DN
+    section, falling back to plain text when the number is not a known DN.
+    """
+    result = adapter.find_dn(number)
+    if result:
+        dn_type, sdk = result
+        label = name or _sdk_name(sdk)
+        return f"[{label} ({number})](#{_anchor(dn_type, number)})"
+    return f"{name} ({number})" if name else number
+
+
 # 3CX group role names -> human-readable labels.
 _ROLE_LABELS: dict[str, str] = {
     "system": "System",
@@ -553,7 +566,7 @@ def _user_props(sdk_obj: Any) -> dict[str, Any]:
     return p
 
 
-def _queue_props(sdk_obj: Any) -> dict[str, Any]:
+def _queue_props(sdk_obj: Any, adapter: ThreeCXAdapter) -> dict[str, Any]:
     p: dict[str, Any] = {}
     strategy = getattr(sdk_obj, "polling_strategy", None)
     if strategy:
@@ -565,7 +578,7 @@ def _queue_props(sdk_obj: Any) -> dict[str, Any]:
     agents = getattr(sdk_obj, "agents", None) or []
     if agents:
         p["Agents"] = ", ".join(
-            f"{a.name} ({a.number})" for a in agents if a.number
+            _peer_link(a.number, a.name, adapter) for a in agents if a.number
         )
     return p
 
@@ -1133,7 +1146,7 @@ def _render_entity(
     anc = _anchor(dn_type, number)
 
     if dn_type == DnType.QUEUE:
-        props = _queue_props(sdk_obj)
+        props = _queue_props(sdk_obj, adapter)
         routes = _queue_routes(sdk_obj, adapter)
     elif dn_type == DnType.RING_GROUP:
         props = _ring_group_props(sdk_obj)

@@ -276,6 +276,21 @@ def _dest_is_set(dest: Optional[Destination]) -> bool:
     )
 
 
+def _dest_target(dest: Optional[Destination], adapter: ThreeCXAdapter) -> Optional[tuple[DnType, str]]:
+    """
+    Resolve a destination to the internal DN it points at, as (DnType, number),
+    or None for external / unset / unresolvable destinations. Used to build the
+    reverse "referenced by" index.
+    """
+    if not _dest_is_set(dest) or dest.to == DestinationType.external:
+        return None
+    number = dest.number or ""
+    if not number:
+        return None
+    result = adapter.find_dn(number)
+    return (result[0], number) if result else None
+
+
 def _fwd_to_dest(fwd: ReceptionistForward) -> Optional[Destination]:
     if not fwd.forward_dn:
         return None
@@ -302,156 +317,186 @@ def _fwd_type_to_dest_type(fwd_type: Optional[Any]) -> DestinationType:
 # Routing-row extraction per DN type  (returns [(label, link_str), …])
 # ---------------------------------------------------------------------------
 
-def _user_routes(sdk_obj: Any, adapter: ThreeCXAdapter) -> list[tuple[str, str]]:
-    rows: list[tuple[str, str]] = []
-    current = sdk_obj.current_profile_name or "Available"
-
-    for profile in sdk_obj.forwarding_profiles or []:
-        pname = profile.name or "Profile"
-        marker = " ★" if pname == current else ""
-        pfx = f"[{pname}{marker}]"
-
-        avail: Optional[AvailableRouting] = profile.available_route
-        if avail:
-            for label, dest in [
-                ("Busy (External)", avail.busy_external),
-                ("Busy (Internal)", avail.busy_internal),
-                ("No Answer (External)", avail.no_answer_external),
-                ("No Answer (Internal)", avail.no_answer_internal),
-                ("Not Registered (Ext)", avail.not_registered_external),
-                ("Not Registered (Int)", avail.not_registered_internal),
-            ]:
-                if _dest_is_set(dest):
-                    link = _dest_link(dest, adapter)
-                    if link:
-                        rows.append((f"{pfx} {label}", link))
-
-        away: Optional[AwayRouting] = profile.away_route
-        if away:
-            for label, dest in [
-                ("Away (External)", away.external),
-                ("Away (Internal)", away.internal),
-            ]:
-                if _dest_is_set(dest):
-                    link = _dest_link(dest, adapter)
-                    if link:
-                        rows.append((f"{pfx} {label}", link))
-
-    for rule in sdk_obj.forwarding_exceptions or []:
-        if not rule.enabled:
-            continue
-        dest = rule.destination
-        if not _dest_is_set(dest):
-            continue
-        link = _dest_link(dest, adapter)
-        if link:
-            cond = rule.condition.value if rule.condition else "?"
-            ctype = f" ({rule.call_type.value})" if rule.call_type else ""
-            rows.append((f"[Exception] {cond}{ctype}", link))
-
-    return rows
+def _queue_edges(sdk_obj: Any) -> list[tuple[str, Destination]]:
+    edges: list[tuple[str, Optional[Destination]]] = [
+        ("Holidays", _route_dest(sdk_obj.holidays_route)),
+        ("Out of Office", _route_dest(sdk_obj.out_of_office_route)),
+        ("Break", _route_dest(sdk_obj.break_route)),
+        ("No Answer / Timeout", sdk_obj.forward_no_answer),
+    ]
+    return [(label, dest) for label, dest in edges if _dest_is_set(dest)]
 
 
-def _queue_routes(sdk_obj: Any, adapter: ThreeCXAdapter) -> list[tuple[str, str]]:
-    rows: list[tuple[str, str]] = []
-    for label, route in [
-        ("Holidays", sdk_obj.holidays_route),
-        ("Out of Office", sdk_obj.out_of_office_route),
-        ("Break", sdk_obj.break_route),
-    ]:
-        dest = _route_dest(route)
-        if _dest_is_set(dest):
-            link = _dest_link(dest, adapter)
-            if link:
-                rows.append((label, link))
-    if _dest_is_set(sdk_obj.forward_no_answer):
-        link = _dest_link(sdk_obj.forward_no_answer, adapter)
-        if link:
-            rows.append(("No Answer / Timeout", link))
-    return rows
+def _ring_group_edges(sdk_obj: Any) -> list[tuple[str, Destination]]:
+    edges: list[tuple[str, Optional[Destination]]] = [
+        ("Holidays", _route_dest(sdk_obj.holidays_route)),
+        ("Out of Office", _route_dest(sdk_obj.out_of_office_route)),
+        ("Break", _route_dest(sdk_obj.break_route)),
+        ("No Answer / Timeout", sdk_obj.forward_no_answer),
+    ]
+    return [(label, dest) for label, dest in edges if _dest_is_set(dest)]
 
 
-def _ring_group_routes(sdk_obj: Any, adapter: ThreeCXAdapter) -> list[tuple[str, str]]:
-    rows: list[tuple[str, str]] = []
-    for label, route in [
-        ("Holidays", sdk_obj.holidays_route),
-        ("Out of Office", sdk_obj.out_of_office_route),
-        ("Break", sdk_obj.break_route),
-    ]:
-        dest = _route_dest(route)
-        if _dest_is_set(dest):
-            link = _dest_link(dest, adapter)
-            if link:
-                rows.append((label, link))
-    if _dest_is_set(sdk_obj.forward_no_answer):
-        link = _dest_link(sdk_obj.forward_no_answer, adapter)
-        if link:
-            rows.append(("No Answer / Timeout", link))
-    return rows
-
-
-def _ivr_routes(sdk_obj: Any, adapter: ThreeCXAdapter) -> list[tuple[str, str]]:
-    rows: list[tuple[str, str]] = []
-    for label, route in [
-        ("Holidays", sdk_obj.holidays_route),
-        ("Out of Office", sdk_obj.out_of_office_route),
-        ("Break", sdk_obj.break_route),
-    ]:
-        dest = _route_dest(route)
-        if _dest_is_set(dest):
-            link = _dest_link(dest, adapter)
-            if link:
-                rows.append((label, link))
+def _ivr_edges(sdk_obj: Any) -> list[tuple[str, Destination]]:
+    edges: list[tuple[str, Optional[Destination]]] = [
+        ("Holidays", _route_dest(sdk_obj.holidays_route)),
+        ("Out of Office", _route_dest(sdk_obj.out_of_office_route)),
+        ("Break", _route_dest(sdk_obj.break_route)),
+    ]
 
     for fwd in sdk_obj.forwards or []:
-        dest = _fwd_to_dest(fwd)
-        if _dest_is_set(dest):
-            link = _dest_link(dest, adapter)
-            if link:
-                key = fwd.input or "?"
-                rows.append((f"Key {key}", link))
+        edges.append((f"Key {fwd.input or '?'}", _fwd_to_dest(fwd)))
 
     if sdk_obj.timeout_forward_dn:
         dest_type = _fwd_type_to_dest_type(sdk_obj.timeout_forward_type)
-        dest = Destination(
-            number=sdk_obj.timeout_forward_dn,
-            to=dest_type,
-            type=sdk_obj.timeout_forward_peer_type,
-            external=sdk_obj.timeout_forward_dn if dest_type == DestinationType.external else None,
-        )
-        if _dest_is_set(dest):
-            link = _dest_link(dest, adapter)
-            if link:
-                rows.append(("Timeout", link))
+        edges.append((
+            "Timeout",
+            Destination(
+                number=sdk_obj.timeout_forward_dn,
+                to=dest_type,
+                type=sdk_obj.timeout_forward_peer_type,
+                external=sdk_obj.timeout_forward_dn if dest_type == DestinationType.external else None,
+            ),
+        ))
 
     if sdk_obj.invalid_key_forward_dn:
-        dest = Destination(
-            number=sdk_obj.invalid_key_forward_dn,
-            to=DestinationType.extension,
-            type=PeerType.extension,
-        )
-        if _dest_is_set(dest):
-            link = _dest_link(dest, adapter)
-            if link:
-                rows.append(("Invalid Key", link))
+        edges.append((
+            "Invalid Key",
+            Destination(
+                number=sdk_obj.invalid_key_forward_dn,
+                to=DestinationType.extension,
+                type=PeerType.extension,
+            ),
+        ))
 
-    return rows
+    return [(label, dest) for label, dest in edges if _dest_is_set(dest)]
 
 
-def _group_routes(sdk_obj: Any, adapter: ThreeCXAdapter) -> list[tuple[str, str]]:
-    rows: list[tuple[str, str]] = []
-    for label, route in [
-        ("Office Hours", sdk_obj.office_route),
-        ("Out of Office", sdk_obj.out_of_office_route),
-        ("Holidays", sdk_obj.holidays_route),
-        ("Break", sdk_obj.break_route),
-    ]:
-        dest = _route_dest(route)
-        if _dest_is_set(dest):
-            link = _dest_link(dest, adapter)
-            if link:
-                rows.append((label, link))
-    return rows
+def _group_edges(sdk_obj: Any) -> list[tuple[str, Destination]]:
+    edges: list[tuple[str, Optional[Destination]]] = [
+        ("Office Hours", _route_dest(sdk_obj.office_route)),
+        ("Out of Office", _route_dest(sdk_obj.out_of_office_route)),
+        ("Holidays", _route_dest(sdk_obj.holidays_route)),
+        ("Break", _route_dest(sdk_obj.break_route)),
+    ]
+    return [(label, dest) for label, dest in edges if _dest_is_set(dest)]
+
+
+def _user_edges(sdk_obj: Any) -> list[tuple[str, Destination]]:
+    """Outbound forwarding destinations of a user, across all profiles + exceptions."""
+    current = getattr(sdk_obj, "current_profile_name", None) or "Available"
+    edges: list[tuple[str, Optional[Destination]]] = []
+
+    for profile in sdk_obj.forwarding_profiles or []:
+        pname = profile.name or "Profile"
+        pname_str = pname.value if hasattr(pname, "value") else str(pname)
+        pfx = f"[{pname_str}{' ★' if pname_str == current else ''}]"
+
+        avail: Optional[AvailableRouting] = profile.available_route
+        if avail:
+            edges += [
+                (f"{pfx} Busy (External)", avail.busy_external),
+                (f"{pfx} Busy (Internal)", avail.busy_internal),
+                (f"{pfx} No Answer (External)", avail.no_answer_external),
+                (f"{pfx} No Answer (Internal)", avail.no_answer_internal),
+                (f"{pfx} Not Registered (Ext)", avail.not_registered_external),
+                (f"{pfx} Not Registered (Int)", avail.not_registered_internal),
+            ]
+
+        away: Optional[AwayRouting] = profile.away_route
+        if away:
+            edges += [
+                (f"{pfx} Away (External)", away.external),
+                (f"{pfx} Away (Internal)", away.internal),
+            ]
+
+    for rule in sdk_obj.forwarding_exceptions or []:
+        if not getattr(rule, "enabled", False):
+            continue
+        cond = rule.condition.value if rule.condition else "?"
+        ctype = f" ({rule.call_type.value})" if rule.call_type else ""
+        edges.append((f"[Exception] {cond}{ctype}", rule.destination))
+
+    return [(label, dest) for label, dest in edges if _dest_is_set(dest)]
+
+
+def _trunk_edges(sdk_obj: Any) -> list[tuple[str, Destination]]:
+    """Inbound-rule destinations of a trunk, one edge per (rule, time condition)."""
+    edges: list[tuple[str, Optional[Destination]]] = []
+    for rule in getattr(sdk_obj, "routing_rules", None) or []:
+        did = f"`{rule.data}`" if getattr(rule, "data", None) else "default"
+        name = getattr(rule, "rule_name", None) or did
+        edges += [
+            (f"{name} — Office Hours", rule.office_hours_destination),
+            (f"{name} — Out of Office", rule.out_of_office_hours_destination),
+            (f"{name} — Holidays", rule.holidays_destination),
+        ]
+    return [(label, dest) for label, dest in edges if _dest_is_set(dest)]
+
+
+# ---------------------------------------------------------------------------
+# Reverse "referenced by" index — who routes calls toward each DN
+# ---------------------------------------------------------------------------
+
+# An inbound reference: (source_dn_type, source_number, source_name, trigger_label)
+Reference = tuple[DnType, str, str, str]
+ReferenceIndex = dict[str, list[Reference]]
+
+
+def build_reference_index(adapter: ThreeCXAdapter) -> ReferenceIndex:
+    """
+    Walk every routing-capable entity's outbound edges and invert them into a
+    map of target anchor → list of inbound references. This lets each entity's
+    section list who sends calls toward it, making the directory navigable in
+    both directions.
+    """
+    index: ReferenceIndex = {}
+
+    def collect(source_type: DnType, source_obj: Any, edges: list[tuple[str, Destination]]) -> None:
+        snum = getattr(source_obj, "number", "") or ""
+        sname = _sdk_name(source_obj)
+        for label, dest in edges:
+            target = _dest_target(dest, adapter)
+            if target is None:
+                continue
+            t_type, t_num = target
+            # Skip pure self-references (e.g. a queue's own voicemail).
+            if t_type == source_type and t_num == snum:
+                continue
+            index.setdefault(_anchor(t_type, t_num), []).append((source_type, snum, sname, label))
+
+    for obj in adapter.all_queues.values():
+        collect(DnType.QUEUE, obj, _queue_edges(obj))
+    for obj in adapter.all_ring_groups.values():
+        collect(DnType.RING_GROUP, obj, _ring_group_edges(obj))
+    for obj in adapter.all_receptionists.values():
+        collect(DnType.IVR, obj, _ivr_edges(obj))
+    for obj in adapter.all_groups.values():
+        collect(DnType.GROUP, obj, _group_edges(obj))
+    for obj in adapter.all_users.values():
+        collect(DnType.USER, obj, _user_edges(obj))
+    for obj in adapter.all_trunks.values():
+        collect(DnType.TRUNK, obj, _trunk_edges(obj))
+
+    return index
+
+
+def _referenced_by_section(anchor: str, references: ReferenceIndex) -> str:
+    """Render the 'Referenced By' table for the entity at the given anchor."""
+    refs = references.get(anchor)
+    if not refs:
+        return ""
+    # Deduplicate and order deterministically by source type, number, then trigger.
+    ordered = sorted(set(refs), key=lambda r: (r[0].value, r[1].zfill(20), r[3]))
+    rows = ["| Source | Trigger |", "|---|---|"]
+    for s_type, s_num, s_name, label in ordered:
+        icon = _ICONS.get(s_type, "•")
+        if s_num:
+            link = f"[{icon} {s_name} ({s_num})](#{_anchor(s_type, s_num)})"
+        else:
+            link = f"{icon} {s_name}"
+        rows.append(f"| {link} | {label} |")
+    return "#### Referenced By\n\n" + "\n".join(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -683,6 +728,18 @@ def _props_table(props: dict[str, Any]) -> str:
     return "\n".join(rows)
 
 
+def _edges_to_rows(
+    edges: list[tuple[str, Destination]], adapter: ThreeCXAdapter
+) -> list[tuple[str, str]]:
+    """Render each (label, Destination) edge to a (label, markdown-link) row."""
+    rows: list[tuple[str, str]] = []
+    for label, dest in edges:
+        link = _dest_link(dest, adapter)
+        if link:
+            rows.append((label, link))
+    return rows
+
+
 def _routes_table(routes: list[tuple[str, str]]) -> str:
     if not routes:
         return "*No outbound routing configured.*"
@@ -696,7 +753,12 @@ def _routes_table(routes: list[tuple[str, str]]) -> str:
 # Trunk-specific rendering
 # ---------------------------------------------------------------------------
 
-def _render_trunk(sdk_obj: Any, adapter: ThreeCXAdapter, include_raw: bool) -> str:
+def _render_trunk(
+    sdk_obj: Any,
+    adapter: ThreeCXAdapter,
+    include_raw: bool,
+    references: ReferenceIndex,
+) -> str:
     number = getattr(sdk_obj, "number", "") or ""
     anc = _anchor(DnType.TRUNK, number)
 
@@ -749,6 +811,11 @@ def _render_trunk(sdk_obj: Any, adapter: ThreeCXAdapter, include_raw: bool) -> s
     else:
         parts.append("*No inbound routing rules configured.*")
 
+    ref_section = _referenced_by_section(anc, references)
+    if ref_section:
+        parts.append("")
+        parts.append(ref_section)
+
     if include_raw:
         try:
             data = sdk_obj.model_dump(by_alias=True, exclude_none=True)
@@ -760,14 +827,14 @@ def _render_trunk(sdk_obj: Any, adapter: ThreeCXAdapter, include_raw: bool) -> s
     return "\n".join(parts)
 
 
-def _render_trunk_section(adapter: ThreeCXAdapter, include_raw: bool) -> str:
+def _render_trunk_section(adapter: ThreeCXAdapter, include_raw: bool, references: ReferenceIndex) -> str:
     trunks = adapter.all_trunks
     if not trunks:
         return ""
     sorted_items = sorted(trunks.items(), key=lambda kv: kv[0].zfill(20))
     parts = ["## 📡 Trunks\n"]
     for _number, sdk_obj in sorted_items:
-        parts.append(_render_trunk(sdk_obj, adapter, include_raw))
+        parts.append(_render_trunk(sdk_obj, adapter, include_raw, references))
         parts.append("\n---\n")
     return "\n".join(parts)
 
@@ -976,7 +1043,12 @@ def _user_greetings_section(sdk_obj: Any) -> str:
     return "#### Greetings\n\n" + "\n".join(rows)
 
 
-def _render_user_entity(sdk_obj: Any, adapter: ThreeCXAdapter, include_raw: bool) -> str:
+def _render_user_entity(
+    sdk_obj: Any,
+    adapter: ThreeCXAdapter,
+    include_raw: bool,
+    references: ReferenceIndex,
+) -> str:
     number = getattr(sdk_obj, "number", "") or ""
     name = _sdk_name(sdk_obj)
     anc = _anchor(DnType.USER, number)
@@ -1110,6 +1182,12 @@ def _render_user_entity(sdk_obj: Any, adapter: ThreeCXAdapter, include_raw: bool
         parts.append(exc_section)
         parts.append("")
 
+    # ── Referenced by ─────────────────────────────────────────────────
+    ref_section = _referenced_by_section(anc, references)
+    if ref_section:
+        parts.append(ref_section)
+        parts.append("")
+
     if include_raw:
         try:
             if hasattr(sdk_obj, "model_dump"):
@@ -1136,9 +1214,10 @@ def _render_entity(
     sdk_obj: Any,
     adapter: ThreeCXAdapter,
     include_raw: bool,
+    references: ReferenceIndex,
 ) -> str:
     if dn_type == DnType.USER:
-        return _render_user_entity(sdk_obj, adapter, include_raw)
+        return _render_user_entity(sdk_obj, adapter, include_raw, references)
 
     number = getattr(sdk_obj, "number", "") or ""
     name = _sdk_name(sdk_obj)
@@ -1147,16 +1226,16 @@ def _render_entity(
 
     if dn_type == DnType.QUEUE:
         props = _queue_props(sdk_obj, adapter)
-        routes = _queue_routes(sdk_obj, adapter)
+        routes = _edges_to_rows(_queue_edges(sdk_obj), adapter)
     elif dn_type == DnType.RING_GROUP:
         props = _ring_group_props(sdk_obj)
-        routes = _ring_group_routes(sdk_obj, adapter)
+        routes = _edges_to_rows(_ring_group_edges(sdk_obj), adapter)
     elif dn_type == DnType.IVR:
         props = _ivr_props(sdk_obj)
-        routes = _ivr_routes(sdk_obj, adapter)
+        routes = _edges_to_rows(_ivr_edges(sdk_obj), adapter)
     elif dn_type == DnType.GROUP:
         props = _group_props(sdk_obj)
-        routes = _group_routes(sdk_obj, adapter)
+        routes = _edges_to_rows(_group_edges(sdk_obj), adapter)
     elif dn_type == DnType.CALL_FLOW_APP:
         props = _cfa_props(sdk_obj)
         routes = []
@@ -1197,6 +1276,11 @@ def _render_entity(
                 parts.append("")
                 parts.append(section)
 
+    ref_section = _referenced_by_section(anc, references)
+    if ref_section:
+        parts.append("")
+        parts.append(ref_section)
+
     if include_raw:
         try:
             if hasattr(sdk_obj, "model_dump"):
@@ -1221,13 +1305,14 @@ def _render_section(
     items: dict[str, Any],
     adapter: ThreeCXAdapter,
     include_raw: bool,
+    references: ReferenceIndex,
 ) -> str:
     if not items:
         return ""
     sorted_items = sorted(items.items(), key=lambda kv: kv[0].zfill(20))
     parts = [f"## {icon} {title}\n"]
     for _number, sdk_obj in sorted_items:
-        parts.append(_render_entity(dn_type, sdk_obj, adapter, include_raw))
+        parts.append(_render_entity(dn_type, sdk_obj, adapter, include_raw, references))
         parts.append("\n---\n")
     return "\n".join(parts)
 
@@ -1297,6 +1382,8 @@ def render_directory(
 ) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    references = build_reference_index(adapter)
+
     total = (
         len(adapter.all_trunks)
         + len(adapter.all_receptionists)
@@ -1319,31 +1406,31 @@ def render_directory(
 
         "---\n",
 
-        _render_trunk_section(adapter, include_raw),
+        _render_trunk_section(adapter, include_raw, references),
 
         _render_section(
             "IVR / Digital Receptionists", "🎛️", DnType.IVR,
-            adapter.all_receptionists, adapter, include_raw,
+            adapter.all_receptionists, adapter, include_raw, references,
         ),
         _render_section(
             "Ring Groups", "🔔", DnType.RING_GROUP,
-            adapter.all_ring_groups, adapter, include_raw,
+            adapter.all_ring_groups, adapter, include_raw, references,
         ),
         _render_section(
             "Queues", "📋", DnType.QUEUE,
-            adapter.all_queues, adapter, include_raw,
+            adapter.all_queues, adapter, include_raw, references,
         ),
         _render_section(
             "Call Flow Apps", "⚙️", DnType.CALL_FLOW_APP,
-            adapter.all_call_flow_apps, adapter, include_raw,
+            adapter.all_call_flow_apps, adapter, include_raw, references,
         ),
         _render_section(
             "Groups", "🏢", DnType.GROUP,
-            adapter.all_groups, adapter, include_raw,
+            adapter.all_groups, adapter, include_raw, references,
         ),
         _render_section(
             "Extensions", "👤", DnType.USER,
-            adapter.all_users, adapter, include_raw,
+            adapter.all_users, adapter, include_raw, references,
         ),
 
         _render_fxs_section(adapter, include_raw),

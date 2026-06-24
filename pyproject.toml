@@ -1,7 +1,7 @@
 [project]
 name = "3cx-flow"
 version = "0.2.0"
-description = "Recursive call-flow analyser and documentation generator for 3CX PBX servers"
+description = "Routing directory and documentation generator for 3CX PBX servers"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [

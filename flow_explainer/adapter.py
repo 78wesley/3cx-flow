@@ -40,6 +40,8 @@ class ThreeCXAdapter:
         self._system_extensions: dict[str, Any] = {}  # keyed by number
         self._prompt_sets: dict[str, Any] = {}        # keyed by folder GUID
         self._dn_groups: dict[str, list[Any]] = {}    # number -> [Group, …] (reverse membership index)
+        self._dn_queues: dict[str, list[Any]] = {}    # number -> [Queue, …] (reverse agent index)
+        self._dn_ring_groups: dict[str, list[Any]] = {}  # number -> [RingGroup, …] (reverse member index)
         self._groups_by_id: dict[int, Any] = {}       # group Id -> Group
         self._prompt_set_names: dict[str, str] = {}   # folder GUID (lowercased) -> display name
         self._loaded = False
@@ -75,6 +77,7 @@ class ThreeCXAdapter:
                 self._system_extensions = cached.get("system_extensions", {})
                 self._prompt_sets = cached.get("prompt_sets", {})
                 self._build_group_index()
+                self._build_membership_index()
                 self._build_prompt_set_index()
                 self._loaded = True
                 total = self._total_count()
@@ -93,6 +96,7 @@ class ThreeCXAdapter:
         self._load_system_extensions()
         self._load_prompt_sets()
         self._build_group_index()
+        self._build_membership_index()
         self._build_prompt_set_index()
         self._loaded = True
 
@@ -263,6 +267,30 @@ class ThreeCXAdapter:
         self._dn_groups = index
         self._groups_by_id = by_id
 
+    def _build_membership_index(self) -> None:
+        """
+        Build reverse indexes mapping each member DN number to the queues it is
+        an agent of and the ring groups it is a member of, from each queue's
+        expanded ``Agents`` and each ring group's expanded ``Members`` collection.
+        A DN may belong to several of each.
+        """
+        q_index: dict[str, list[Any]] = {}
+        for queue in self._queues.values():
+            for agent in getattr(queue, "agents", None) or []:
+                num = getattr(agent, "number", None)
+                if num:
+                    q_index.setdefault(num, []).append(queue)
+
+        rg_index: dict[str, list[Any]] = {}
+        for rg in self._ring_groups.values():
+            for member in getattr(rg, "members", None) or []:
+                num = getattr(member, "number", None)
+                if num:
+                    rg_index.setdefault(num, []).append(rg)
+
+        self._dn_queues = q_index
+        self._dn_ring_groups = rg_index
+
     def _build_prompt_set_index(self) -> None:
         """Map prompt-set folder GUIDs (lowercased) to their display names."""
         names: dict[str, str] = {}
@@ -275,6 +303,14 @@ class ThreeCXAdapter:
     def groups_for(self, number: str) -> list[Any]:
         """Return the list of groups (departments) the given DN belongs to."""
         return self._dn_groups.get(number, [])
+
+    def queues_for(self, number: str) -> list[Any]:
+        """Return the queues the given DN is an agent of."""
+        return self._dn_queues.get(number, [])
+
+    def ring_groups_for(self, number: str) -> list[Any]:
+        """Return the ring groups the given DN is a member of."""
+        return self._dn_ring_groups.get(number, [])
 
     def group_by_id(self, group_id: Optional[int]) -> Optional[Any]:
         """Return the group with the given Id, or None."""

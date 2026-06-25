@@ -257,6 +257,26 @@ def _user_department_value(sdk_obj: Any, adapter: ThreeCXAdapter) -> Optional[st
     return ", ".join(parts) if parts else None
 
 
+def _membership_links(items: list[Any], dn_type: DnType) -> Optional[str]:
+    """
+    Render a list of queues / ring groups a user belongs to as a comma-separated
+    list of links to each one's section. Returns None when the list is empty.
+    """
+    if not items:
+        return None
+    icon = _ICONS.get(dn_type, "•")
+    ordered = sorted(items, key=lambda o: (getattr(o, "number", "") or "").zfill(20))
+    parts: list[str] = []
+    for o in ordered:
+        num = getattr(o, "number", "") or ""
+        name = _sdk_name(o)
+        if num:
+            parts.append(f"[{icon} {name} ({num})](#{_anchor(dn_type, num)})")
+        else:
+            parts.append(f"{icon} {name}")
+    return ", ".join(parts)
+
+
 def _dest_cell(dest: Optional[Destination], adapter: ThreeCXAdapter) -> str:
     """Like _dest_link but returns '—' instead of None (for table cells)."""
     link = _dest_link(dest, adapter)
@@ -1065,6 +1085,14 @@ def _render_user_entity(
     dept = _user_department_value(sdk_obj, adapter)
     if dept:
         props["Department"] = dept
+
+    # Queue / ring group membership (which ones this user is assigned to).
+    queues_val = _membership_links(adapter.queues_for(number), DnType.QUEUE)
+    if queues_val:
+        props["Queues"] = queues_val
+    ring_groups_val = _membership_links(adapter.ring_groups_for(number), DnType.RING_GROUP)
+    if ring_groups_val:
+        props["Ring Groups"] = ring_groups_val
 
     # Account status — only flag the non-default (disabled) case.
     if getattr(sdk_obj, "enabled", None) is False:
